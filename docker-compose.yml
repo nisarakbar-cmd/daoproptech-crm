@@ -11,103 +11,104 @@ services:
       bash -c "
       chown -R 1000:1000 /tmp/server-local-data
       && chown -R 1000:1000 /tmp/docker-data"
-
-  front:
-    image: twentycrm/twenty:latest
-    command: ["yarn", "front:start"]
-    ports:
-      - "3003:3003"
-    environment:
-      VITE_PORT: 3003
-      VITE_HOST: "0.0.0.0"
-      REACT_APP_SERVER_BASE_URL: ${REACT_APP_SERVER_BASE_URL:-http://195.35.0.107:3004}
-      GENERATE_SOURCEMAP: false
-    depends_on:
-      server:
-        condition: service_healthy
-    healthcheck:
-      test: curl --fail http://localhost:3003
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    restart: always
+    networks:
+      - default
 
   server:
-    image: twentycrm/twenty:latest
+    image: twentycrm/twenty:${TAG:-latest}
     volumes:
       - server-local-data:/app/packages/twenty-server/.local-storage
       - docker-data:/app/docker-data
-    ports:
-      - "3004:3004"
     environment:
-      PORT: 3004
-      HOST: 0.0.0.0
+      NODE_PORT: 36000
       PG_DATABASE_URL: postgres://${PG_DATABASE_USER:-postgres}:${PG_DATABASE_PASSWORD:-postgres}@${PG_DATABASE_HOST:-db}:${PG_DATABASE_PORT:-5432}/default
       SERVER_URL: ${SERVER_URL}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
-
       STORAGE_TYPE: ${STORAGE_TYPE}
       STORAGE_S3_REGION: ${STORAGE_S3_REGION}
       STORAGE_S3_NAME: ${STORAGE_S3_NAME}
       STORAGE_S3_ENDPOINT: ${STORAGE_S3_ENDPOINT}
-
-      APP_SECRET: ${APP_SECRET}
+      APP_SECRET: ${APP_SECRET:-replace_me_with_a_random_string}
     depends_on:
       change-vol-ownership:
         condition: service_completed_successfully
       db:
         condition: service_healthy
     healthcheck:
-      test: curl --fail http://localhost:3004/healthz
+      test: curl --fail http://localhost:36000/healthz
       interval: 5s
       timeout: 5s
       retries: 10
-      start_period: 60s
     restart: always
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.twenty-crm.rule=Host(`crm.daoproptech.com`)"
+      - "traefik.http.routers.twenty-crm.entrypoints=websecure"
+      - "traefik.http.routers.twenty-crm.tls.certresolver=myresolver"
+      - "traefik.http.services.twenty-crm.loadbalancer.server.port=36000"
+      - "traefik.http.routers.twenty-crm-http.rule=Host(`crm.daoproptech.com`)"
+      - "traefik.http.routers.twenty-crm-http.entrypoints=web"
+      - "traefik.http.routers.twenty-crm-http.middlewares=redirect-to-https@docker"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.permanent=true"
+    networks:
+      - default
 
   worker:
-    image: twentycrm/twenty:latest
+    image: twentycrm/twenty:${TAG:-latest}
+    volumes:
+      - server-local-data:/app/packages/twenty-server/.local-storage
     command: ["yarn", "worker:prod"]
     environment:
-      PG_DATABASE_URL: postgres://${PG_DATABASE_USER:-postgres}:${PG_DATABASE_PASSWORD:-postgres}@${PG_DATABASE_HOST:-db}:${PG_DATABASE_PORT:-5432}/twenty
+      PG_DATABASE_URL: postgres://${PG_DATABASE_USER:-postgres}:${PG_DATABASE_PASSWORD:-postgres}@${PG_DATABASE_HOST:-db}:${PG_DATABASE_PORT:-5432}/default
       SERVER_URL: ${SERVER_URL}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
-      DISABLE_DB_MIGRATIONS: "true" # it already runs on the server
-
+      DISABLE_DB_MIGRATIONS: "true"
       STORAGE_TYPE: ${STORAGE_TYPE}
       STORAGE_S3_REGION: ${STORAGE_S3_REGION}
       STORAGE_S3_NAME: ${STORAGE_S3_NAME}
       STORAGE_S3_ENDPOINT: ${STORAGE_S3_ENDPOINT}
-
-      APP_SECRET: ${APP_SECRET}
+      APP_SECRET: ${APP_SECRET:-replace_me_with_a_random_string}
     depends_on:
       db:
         condition: service_healthy
       server:
         condition: service_healthy
     restart: always
+    networks:
+      - default
 
   db:
-    image: twentycrm/twenty-postgres-spilo:latest
+    image: pgvector/pgvector:pg16
+    ports:
+      - "5433:5432"
     volumes:
-      - db-data:/home/postgres/pgdata
+      - db-data:/var/lib/postgresql/data
     environment:
-      PGUSER_SUPERUSER: ${PG_DATABASE_USER:-postgres}
-      PGPASSWORD_SUPERUSER: ${PG_DATABASE_PASSWORD:-postgres}
-      ALLOW_NOSSL: "true"
-      SPILO_PROVIDER: "local"
+      POSTGRES_USER: ${PG_DATABASE_USER:-postgres}
+      POSTGRES_PASSWORD: ${PG_DATABASE_PASSWORD:-postgres}
+      POSTGRES_DB: default
     healthcheck:
       test: pg_isready -U ${PG_DATABASE_USER:-postgres} -h localhost -d postgres
       interval: 5s
       timeout: 5s
       retries: 10
     restart: always
+    networks:
+      - default
 
   redis:
     image: redis
     restart: always
+    command: ["--maxmemory-policy", "noeviction"]
+    networks:
+      - default
 
 volumes:
   docker-data:
   db-data:
   server-local-data:
+
+networks:
+  default:
+    driver: bridge
